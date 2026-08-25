@@ -132,11 +132,29 @@ async def init_db() -> None:
     _client = TursoHTTPClient(url=url, auth_token=auth_token)
 
     schema_path = Path(__file__).parent / "schema.sql"
-    schema_sql = schema_path.read_text()
-    # split on ';' — schema.sql has no semicolons inside string literals
+    schema_sql = _strip_sql_comments(schema_path.read_text())
     statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
     for stmt in statements:
         await _client.execute(stmt)
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Removes '-- ...' comments before statement-splitting on ';'.
+
+    schema.sql's comments contain literal semicolons in the prose (e.g.
+    "...identifies the show; nickname is per-server..."), which broke a
+    naive split(";") on the raw file — it cut mid-comment and sent
+    comment-only fragments to Turso as if they were statements. None of
+    our comments live inside a quoted string, so a plain '--' search per
+    line is safe here.
+    """
+    lines = []
+    for line in sql.splitlines():
+        idx = line.find("--")
+        if idx != -1:
+            line = line[:idx]
+        lines.append(line)
+    return "\n".join(lines)
 
 
 async def close_db() -> None:
