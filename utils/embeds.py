@@ -179,3 +179,105 @@ def reminder_embed(anime: dict, nickname: str, episode: int, days_label: str) ->
 
     return header, embed
       
+
+
+# ---------------------------------------------------------------------------
+# Part 2: Manga embeds — same conventions as the anime ones above, pink
+# instead of blue per spec.
+# ---------------------------------------------------------------------------
+
+PINK = discord.Color.from_rgb(255, 105, 180)
+
+
+def _spoiler_description(description: str | None) -> str:
+    """Manga descriptions aren't wrapped in spoiler tags in the spec (only
+    the anime synopsis was) — this just truncates and is named separately
+    from _spoiler_synopsis for clarity at call sites."""
+    if not description:
+        return "No description available."
+    text = description.strip()
+    if len(text) > SYNOPSIS_LIMIT:
+        text = text[:SYNOPSIS_LIMIT].rsplit(" ", 1)[0] + "..."
+    return text
+
+
+def manga_add_confirmation_embed(manga: dict) -> discord.Embed:
+    """Posted by /manga-add right after a title is tracked."""
+    embed = discord.Embed(
+        title=manga.get("title_english"),
+        url=manga.get("mangadex_url"),
+        description=_spoiler_description(manga.get("description")),
+        color=PINK,
+    )
+    cover = manga.get("cover_image_url")
+    if cover:
+        embed.set_image(url=cover)
+    return embed
+
+
+def manga_details_embed(manga: dict) -> discord.Embed:
+    """/manga <name> — full detail card."""
+    embed = discord.Embed(
+        title=manga.get("title_english"),
+        url=manga.get("mangadex_url"),
+        description=_spoiler_description(manga.get("description")),
+        color=PINK,
+    )
+
+    genres = manga.get("genres") or []
+    embed.add_field(name="Genre", value=", ".join(genres) or "N/A", inline=True)
+    embed.add_field(name="Creator", value=manga.get("creator") or "N/A", inline=True)
+    embed.add_field(name="Type", value=manga.get("manga_type") or "N/A", inline=True)
+    embed.add_field(name="Manga status", value=(manga.get("status") or "N/A").title(), inline=True)
+
+    rating = manga.get("rating")
+    embed.add_field(name="Rating", value=f"{rating}/10" if rating is not None else "N/A", inline=True)
+
+    total_en = manga.get("total_chapters_en")
+    embed.add_field(
+        name="Total chapters",
+        value=f"English: {total_en if total_en is not None else '?'} chapters",
+        inline=True,
+    )
+
+    cover = manga.get("cover_image_url")
+    if cover:
+        embed.set_image(url=cover)
+    return embed
+
+
+def new_chapter_embed(manga: dict, chapter_number: str, nickname: str,
+                       readers: list[str] | None = None) -> tuple[str, discord.Embed]:
+    """Returns (header_text, embed) for a new-chapter notification."""
+    header = f'## New chapter {chapter_number} of "{nickname}" has now aired 🔖'
+
+    embed = discord.Embed(
+        title=manga.get("title_english"),
+        url=manga.get("mangadex_url"),
+        description=_spoiler_description(manga.get("description")),
+        color=PINK,
+    )
+
+    embed.add_field(name="Chapter", value=str(chapter_number), inline=True)
+    embed.add_field(name="Language", value="English", inline=True)
+
+    rating = manga.get("rating")
+    embed.add_field(name="Manga rating", value=f"{rating}/10" if rating is not None else "N/A", inline=True)
+    embed.add_field(name="Genre", value=", ".join(manga.get("genres") or []) or "N/A", inline=False)
+
+    cover = manga.get("cover_image_url")
+    if cover:
+        embed.set_image(url=cover)
+
+    if readers:
+        mentions = " ".join(f"<@{uid}>" for uid in readers)
+        embed.add_field(name="Read:", value=mentions, inline=False)
+
+    return header, embed
+
+
+def manga_error_embed(message: str) -> discord.Embed:
+    """Per Note8 — all messages, including errors, should be embeds for
+    the manga side (Part 1's errors stayed plain-text for consistency
+    with what was already deployed; this only applies to Part 2)."""
+    return discord.Embed(description=message, color=PINK)
