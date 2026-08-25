@@ -17,15 +17,30 @@ _client: libsql_client.Client | None = None
 
 
 async def init_db() -> None:
-    """Create the client and apply schema.sql. Call once on bot startup."""
+    """Create the client and apply schema.sql. Call once on bot startup.
+
+    Forces the https:// (HTTP-based Hrana) transport rather than the
+    libsql:// / wss:// websocket transport — several Turso databases
+    (notably ones provisioned on aws-ap-south-1) reject the legacy
+    websocket handshake with a 400, even with a valid URL/token. HTTP
+    transport is universally supported, so we normalize to it here
+    regardless of what scheme is in the env var.
+    """
     global _client
     url = os.environ["TURSO_DATABASE_URL"]
     auth_token = os.environ["TURSO_AUTH_TOKEN"]
+
+    if url.startswith("libsql://"):
+        url = "https://" + url[len("libsql://"):]
+    elif url.startswith("wss://"):
+        url = "https://" + url[len("wss://"):]
+    elif url.startswith("ws://"):
+        url = "http://" + url[len("ws://"):]
+
     _client = libsql_client.create_client(url=url, auth_token=auth_token)
 
     schema_path = Path(__file__).parent / "schema.sql"
     schema_sql = schema_path.read_text()
-    # split on ';' — schema.sql has no semicolons inside string literals
     statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
     for stmt in statements:
         await _client.execute(stmt)
