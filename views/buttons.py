@@ -16,7 +16,7 @@ Discord button rules that shape this file:
 import discord
 
 from db import database as db
-from utils.embeds import new_episode_embed
+from utils.embeds import new_chapter_embed, new_episode_embed
 
 
 class SubscribeView(discord.ui.View):
@@ -99,3 +99,83 @@ class NotificationView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=self)
               
+
+
+# ---------------------------------------------------------------------------
+# Part 2: Manga views — same persistence pattern as the anime views above.
+# ---------------------------------------------------------------------------
+
+class MangaSubscribeView(discord.ui.View):
+    """Attached to the /manga-add confirmation embed."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Subscribe", style=discord.ButtonStyle.green,
+        custom_id="amtrack:manga_subscribe",
+    )
+    async def subscribe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed is None or not embed.url:
+            await interaction.response.send_message(
+                "Couldn't figure out which manga this button belongs to.", ephemeral=True
+            )
+            return
+
+        manga = await db.get_tracked_manga_by_url(str(interaction.guild_id), embed.url)
+        if manga is None:
+            await interaction.response.send_message(
+                "This manga is no longer tracked in this server.", ephemeral=True
+            )
+            return
+
+        result = await db.subscribe_manga(manga["id"], str(interaction.user.id))
+        if result == "ok":
+            await interaction.response.send_message(
+                f"Subscribed to **{manga['nickname']}**.", ephemeral=True
+            )
+        elif result == "already":
+            await interaction.response.send_message(
+                f"You're already subscribed to **{manga['nickname']}**.", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"**{manga['nickname']}** has reached its subscriber limit (100).",
+                ephemeral=True,
+            )
+
+
+class MangaNotificationView(discord.ui.View):
+    """
+    Attached to each new-chapter notification message. mangadex_url
+    defaults to None for the persistent "template" instance registered
+    at startup (see main.py's setup_hook) — real notifications always
+    pass it in.
+    """
+
+    def __init__(self, mangadex_url: str | None = None):
+        super().__init__(timeout=None)
+        if mangadex_url:
+            self.add_item(discord.ui.Button(label="MangaDex", style=discord.ButtonStyle.link, url=mangadex_url))
+
+    @discord.ui.button(
+        label="Mark as Read", style=discord.ButtonStyle.green,
+        custom_id="amtrack:mark_read",
+    )
+    async def mark_read(self, interaction: discord.Interaction, button: discord.ui.Button):
+        message_id = str(interaction.message.id)
+        read_row = await db.get_read_status(message_id)
+        if read_row is None:
+            await interaction.response.send_message(
+                "Couldn't find read-tracking data for this message.", ephemeral=True
+            )
+            return
+
+        readers = await db.toggle_read(message_id, str(interaction.user.id))
+        manga = await db.get_tracked_manga_by_id(read_row["tracked_manga_id"])
+
+        _, embed = new_chapter_embed(
+            manga, read_row["chapter_number"], manga["nickname"], readers=readers
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
