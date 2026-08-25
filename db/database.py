@@ -3,28 +3,120 @@ Turso (libSQL) database layer for AM Track.
 
 One shared async client, opened once at bot startup via init_db() and
 closed in on_shutdown(). All other modules import `db` from here and
-call its methods rather than touching libsql_client directly.
+call its methods rather than touching the HTTP client directly.
+
+We talk to Turso's HTTP pipeline API (v2/pipeline) directly via aiohttp
+instead of the official `libsql-client` PyPI package. That package is
+unmaintained and its 0.3.1 release throws `KeyError: 'result'` against
+current Turso servers — a client-side bug, not anything wrong with the
+database or credentials. The v2/pipeline HTTP API is simple, stable,
+and documented at https://docs.turso.tech/sdk/http/reference — this
+wrapper implements just enough of it for our needs.
 """
 
+import base64
 import json
 import os
 from pathlib import Path
 from typing import Any
 
-import libsql_client
+import aiohttp
 
-_client: libsql_client.Client | None = None
+_client: "TursoHTTPClient | None" = None
+
+
+class ResultSet:
+    """Minimal stand-in for libsql_client's ResultSet — keeps every query
+    function below (which reads .columns / .rows) unchanged."""
+
+    def __init__(self, columns: list[str], rows: list[list[Any]]):
+        self.columns = columns
+        self.rows = rows
+
+
+class TursoHTTPClient:
+    """Thin async wrapper around Turso's /v2/pipeline HTTP endpoint."""
+
+    def __init__(self, url: str, auth_token: str):
+        self.base_url = url.rstrip("/")
+        self.auth_token = auth_token
+        self._session: aiohttp.ClientSession | None = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+
+    async def execute(self, sql: str, args: list[Any] | None = None) -> ResultSet:
+        args = args or []
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": {"sql": sql, "args": [self._to_arg(a) for a in args]}},
+                {"type": "close"},
+            ]
+        }
+        headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json",
+        }
+        session = self._get_session()
+        async with session.post(f"{self.base_url}/v2/pipeline", json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                raise RuntimeError(f"Turso HTTP error {resp.status}: {data}")
+
+        result = data["results"][0]
+        if result["type"] == "error":
+            raise RuntimeError(f"Turso SQL error for statement {sql!r}: {result['error']}")
+
+        exec_result = result["response"]["result"]
+        columns = [c["name"] for c in exec_result.get("cols", [])]
+        rows = [
+            [self._from_cell(cell) for cell in row]
+            for row in exec_result.get("rows", [])
+        ]
+        return ResultSet(columns, rows)
+
+    @staticmethod
+    def _to_arg(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {"type": "null"}
+        if isinstance(value, bool):
+            return {"type": "integer", "value": str(int(value))}
+        if isinstance(value, int):
+            return {"type": "integer", "value": str(value)}
+        if isinstance(value, float):
+            return {"type": "float", "value": value}
+        if isinstance(value, (bytes, bytearray)):
+            return {"type": "blob", "base64": base64.b64encode(value).decode()}
+        return {"type": "text", "value": str(value)}
+
+    @staticmethod
+    def _from_cell(cell: dict[str, Any]) -> Any:
+        cell_type = cell.get("type")
+        if cell_type == "null":
+            return None
+        if cell_type == "integer":
+            return int(cell["value"])
+        if cell_type == "float":
+            return float(cell["value"])
+        if cell_type == "text":
+            return cell["value"]
+        if cell_type == "blob":
+            return base64.b64decode(cell.get("base64", ""))
+        return cell.get("value")
 
 
 async def init_db() -> None:
     """Create the client and apply schema.sql. Call once on bot startup.
 
-    Forces the https:// (HTTP-based Hrana) transport rather than the
-    libsql:// / wss:// websocket transport — several Turso databases
-    (notably ones provisioned on aws-ap-south-1) reject the legacy
-    websocket handshake with a 400, even with a valid URL/token. HTTP
-    transport is universally supported, so we normalize to it here
-    regardless of what scheme is in the env var.
+    Normalizes libsql:// / wss:// URLs to https:// — Turso's HTTP API
+    works universally, whereas the websocket transport some client
+    libraries default to gets rejected by some Turso deployments.
     """
     global _client
     url = os.environ["TURSO_DATABASE_URL"]
@@ -37,10 +129,11 @@ async def init_db() -> None:
     elif url.startswith("ws://"):
         url = "http://" + url[len("ws://"):]
 
-    _client = libsql_client.create_client(url=url, auth_token=auth_token)
+    _client = TursoHTTPClient(url=url, auth_token=auth_token)
 
     schema_path = Path(__file__).parent / "schema.sql"
     schema_sql = schema_path.read_text()
+    # split on ';' — schema.sql has no semicolons inside string literals
     statements = [s.strip() for s in schema_sql.split(";") if s.strip()]
     for stmt in statements:
         await _client.execute(stmt)
@@ -51,7 +144,7 @@ async def close_db() -> None:
         await _client.close()
 
 
-def _client_or_raise() -> libsql_client.Client:
+def _client_or_raise() -> TursoHTTPClient:
     if _client is None:
         raise RuntimeError("Database not initialized — call init_db() first")
     return _client
