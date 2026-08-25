@@ -96,3 +96,55 @@ CREATE TABLE IF NOT EXISTS watched_status (
     watchers         TEXT NOT NULL DEFAULT '[]', -- JSON array of user_ids
     PRIMARY KEY (message_id)
 );
+
+
+-- ===========================================================================
+-- Part 2: Manga (MangaDex, English-language chapters only)
+-- ===========================================================================
+
+-- Manga tracked by a given server. mangadex_id identifies the title;
+-- nickname is per-server, same pattern as tracked_anime.
+CREATE TABLE IF NOT EXISTS tracked_manga (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        TEXT NOT NULL REFERENCES servers(guild_id) ON DELETE CASCADE,
+    mangadex_id     TEXT NOT NULL,
+    nickname        TEXT NOT NULL,
+    added_by        TEXT NOT NULL,
+    added_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    -- cached MangaDex fields, refreshed by the manga polling loop
+    title_english   TEXT,
+    cover_image_url TEXT,
+    description     TEXT,
+    genres          TEXT,           -- JSON array as text
+    creator         TEXT,
+    manga_type      TEXT,           -- Manga / Manhwa / Manhua / Comic (heuristic, see services/mangadex.py)
+    status          TEXT,           -- ongoing / completed / hiatus / cancelled
+    rating          REAL,           -- MangaDex bayesian average, 0-10 scale
+    total_chapters_en INTEGER,
+    mangadex_url    TEXT,
+    last_chapter_id         TEXT,   -- MangaDex chapter UUID of the most recently seen chapter
+    last_chapter_number     TEXT,   -- chapter "number" as MangaDex stores it (string — can be non-integer)
+    last_chapter_published_at TEXT, -- ISO8601 — polling cursor for /chapter?publishAtSince=
+    UNIQUE (guild_id, nickname)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tracked_manga_mangadex_id ON tracked_manga(mangadex_id);
+CREATE INDEX IF NOT EXISTS idx_tracked_manga_guild ON tracked_manga(guild_id);
+
+-- Member subscriptions (max 100 enforced in application code, same as anime)
+CREATE TABLE IF NOT EXISTS manga_subscriptions (
+    tracked_manga_id INTEGER NOT NULL REFERENCES tracked_manga(id) ON DELETE CASCADE,
+    user_id          TEXT NOT NULL,
+    subscribed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tracked_manga_id, user_id)
+);
+
+-- Persisted "Mark as Read" state per notification message.
+CREATE TABLE IF NOT EXISTS read_status (
+    message_id       TEXT NOT NULL,
+    channel_id       TEXT NOT NULL,
+    tracked_manga_id INTEGER NOT NULL REFERENCES tracked_manga(id) ON DELETE CASCADE,
+    chapter_number   TEXT NOT NULL,
+    readers          TEXT NOT NULL DEFAULT '[]', -- JSON array of user_ids
+    PRIMARY KEY (message_id)
+);
