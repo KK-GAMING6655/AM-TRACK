@@ -10,9 +10,9 @@ gateway):
   3. load_extension(cog)   — load each cog's slash commands
   4. tree.sync()            — push the slash command list to Discord
 
-The polling loop (services/poller.py, added next) is started from
-on_ready() rather than setup_hook(), since it needs bot.guilds/caches
-populated.
+The polling loops (services/poller.py, services/manga_poller.py) are
+started from on_ready() rather than setup_hook(), since they need
+bot.guilds/caches populated.
 """
 
 import logging
@@ -24,9 +24,10 @@ from dotenv import load_dotenv
 
 from db.database import close_db, init_db
 from keep_alive import keep_alive
+from services.manga_poller import start_manga_poller
 from services.poller import start_poller
 from utils.permissions import on_app_command_error
-from views.buttons import NotificationView, SubscribeView
+from views.buttons import MangaNotificationView, MangaSubscribeView, NotificationView, SubscribeView
 
 load_dotenv()
 
@@ -36,7 +37,7 @@ log = logging.getLogger("amtrack")
 INTENTS = discord.Intents.default()
 INTENTS.members = True  # needed to resolve users for /admin-add's Member picker and mentions
 
-COGS = ["cogs.admin", "cogs.anime"]
+COGS = ["cogs.admin", "cogs.anime", "cogs.manga"]
 
 
 class AMTrackBot(commands.Bot):
@@ -53,6 +54,8 @@ class AMTrackBot(commands.Bot):
         # before this restart keep responding.
         self.add_view(SubscribeView())
         self.add_view(NotificationView())
+        self.add_view(MangaSubscribeView())
+        self.add_view(MangaNotificationView())
 
         for cog in COGS:
             await self.load_extension(cog)
@@ -66,6 +69,7 @@ class AMTrackBot(commands.Bot):
     async def on_ready(self):
         log.info("Logged in as %s (%s)", self.user, self.user.id)
         start_poller(self)
+        start_manga_poller(self)
 
     async def close(self):
         await close_db()
