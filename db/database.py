@@ -569,3 +569,236 @@ async def get_watched(message_id: str) -> dict[str, Any] | None:
     row["watchers"] = json.loads(row["watchers"])
     return row
   
+
+# ===========================================================================
+# Part 2: Manga (mirrors the anime functions above — see schema.sql for
+# the table shapes)
+# ===========================================================================
+
+async def add_tracked_manga(guild_id: str, mangadex_id: str, nickname: str,
+                             added_by: str, manga_data: dict[str, Any]) -> int | None:
+    """manga_data is a merged dict of services/mangadex.to_db_fields() plus
+    rating/total_chapters_en/last_chapter_* — see cogs/manga.py's manga_add.
+    Returns the new row id, or None if the nickname is already taken."""
+    c = _client_or_raise()
+    existing = await c.execute(
+        "SELECT 1 FROM tracked_manga WHERE guild_id = ? AND nickname = ?",
+        [guild_id, nickname],
+    )
+    if existing.rows:
+        return None
+
+    rs = await c.execute(
+        """
+        INSERT INTO tracked_manga (
+            guild_id, mangadex_id, nickname, added_by,
+            title_english, cover_image_url, description, genres, creator,
+            manga_type, status, rating, total_chapters_en, mangadex_url,
+            last_chapter_id, last_chapter_number, last_chapter_published_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
+        """,
+        [
+            guild_id, mangadex_id, nickname, added_by,
+            manga_data.get("title_english"), manga_data.get("cover_image_url"),
+            manga_data.get("description"), json.dumps(manga_data.get("genres", [])),
+            manga_data.get("creator"), manga_data.get("manga_type"),
+            manga_data.get("status"), manga_data.get("rating"),
+            manga_data.get("total_chapters_en"), manga_data.get("mangadex_url"),
+            manga_data.get("last_chapter_id"), manga_data.get("last_chapter_number"),
+            manga_data.get("last_chapter_published_at"),
+        ],
+    )
+    return rs.rows[0][0]
+
+
+async def remove_tracked_manga(guild_id: str, nickname: str) -> bool:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "DELETE FROM tracked_manga WHERE guild_id = ? AND nickname = ? RETURNING id",
+        [guild_id, nickname],
+    )
+    return len(rs.rows) > 0
+
+
+def _row_to_manga_dict(columns: list[str], row: list[Any]) -> dict[str, Any]:
+    d = dict(zip(columns, row))
+    d["genres"] = json.loads(d["genres"]) if d.get("genres") else []
+    return d
+
+
+async def get_tracked_manga_by_nickname(guild_id: str, nickname: str) -> dict[str, Any] | None:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT * FROM tracked_manga WHERE guild_id = ? AND nickname = ?",
+        [guild_id, nickname],
+    )
+    if not rs.rows:
+        return None
+    return _row_to_manga_dict(rs.columns, rs.rows[0])
+
+
+async def get_tracked_manga_by_id(tracked_manga_id: int) -> dict[str, Any] | None:
+    c = _client_or_raise()
+    rs = await c.execute("SELECT * FROM tracked_manga WHERE id = ?", [tracked_manga_id])
+    if not rs.rows:
+        return None
+    return _row_to_manga_dict(rs.columns, rs.rows[0])
+
+
+async def get_tracked_manga_by_url(guild_id: str, mangadex_url: str) -> dict[str, Any] | None:
+    """Used by the manga Subscribe button, same pattern as the anime one."""
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT * FROM tracked_manga WHERE guild_id = ? AND mangadex_url = ?",
+        [guild_id, mangadex_url],
+    )
+    if not rs.rows:
+        return None
+    return _row_to_manga_dict(rs.columns, rs.rows[0])
+
+
+async def list_tracked_manga(guild_id: str) -> list[dict[str, Any]]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT * FROM tracked_manga WHERE guild_id = ? ORDER BY nickname", [guild_id]
+    )
+    return [_row_to_manga_dict(rs.columns, row) for row in rs.rows]
+
+
+async def list_all_tracked_manga_for_mangadex_id(mangadex_id: str) -> list[dict[str, Any]]:
+    """Every server's tracked_manga row for a given MangaDex title — used by
+    the polling loop to fan a new-chapter event out to every server."""
+    c = _client_or_raise()
+    rs = await c.execute("SELECT * FROM tracked_manga WHERE mangadex_id = ?", [mangadex_id])
+    return [_row_to_manga_dict(rs.columns, row) for row in rs.rows]
+
+
+async def list_distinct_mangadex_ids() -> list[str]:
+    c = _client_or_raise()
+    rs = await c.execute("SELECT DISTINCT mangadex_id FROM tracked_manga")
+    return [row[0] for row in rs.rows]
+
+
+async def update_manga_cache(tracked_manga_id: int, manga_data: dict[str, Any]) -> None:
+    """Refreshes cached MangaDex metadata (title/cover/description/etc) —
+    deliberately does NOT touch last_chapter_* (that's the polling loop's
+    detection state, updated separately via set_last_chapter)."""
+    c = _client_or_raise()
+    await c.execute(
+        """
+        UPDATE tracked_manga SET
+            title_english = ?, cover_image_url = ?, description = ?, genres = ?,
+            creator = ?, manga_type = ?, status = ?, rating = ?,
+            total_chapters_en = ?, mangadex_url = ?
+        WHERE id = ?
+        """,
+        [
+            manga_data.get("title_english"), manga_data.get("cover_image_url"),
+            manga_data.get("description"), json.dumps(manga_data.get("genres", [])),
+            manga_data.get("creator"), manga_data.get("manga_type"),
+            manga_data.get("status"), manga_data.get("rating"),
+            manga_data.get("total_chapters_en"), manga_data.get("mangadex_url"),
+            tracked_manga_id,
+        ],
+    )
+
+
+async def set_last_chapter(tracked_manga_id: int, chapter_id: str,
+                            chapter_number: str, published_at: str) -> None:
+    c = _client_or_raise()
+    await c.execute(
+        "UPDATE tracked_manga SET last_chapter_id = ?, last_chapter_number = ?, "
+        "last_chapter_published_at = ? WHERE id = ?",
+        [chapter_id, chapter_number, published_at, tracked_manga_id],
+    )
+
+
+# ---------------------------------------------------------------------------
+# manga_subscriptions
+# ---------------------------------------------------------------------------
+
+async def subscribe_manga(tracked_manga_id: int, user_id: str) -> str:
+    """Returns 'ok', 'already' or 'full' — mirrors subscribe() above."""
+    c = _client_or_raise()
+    existing = await c.execute(
+        "SELECT 1 FROM manga_subscriptions WHERE tracked_manga_id = ? AND user_id = ?",
+        [tracked_manga_id, user_id],
+    )
+    if existing.rows:
+        return "already"
+
+    count_rs = await c.execute(
+        "SELECT COUNT(*) FROM manga_subscriptions WHERE tracked_manga_id = ?",
+        [tracked_manga_id],
+    )
+    if count_rs.rows[0][0] >= SUBSCRIBER_LIMIT:
+        return "full"
+
+    await c.execute(
+        "INSERT INTO manga_subscriptions (tracked_manga_id, user_id) VALUES (?, ?)",
+        [tracked_manga_id, user_id],
+    )
+    return "ok"
+
+
+async def unsubscribe_manga(tracked_manga_id: int, user_id: str) -> bool:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "DELETE FROM manga_subscriptions WHERE tracked_manga_id = ? AND user_id = ? "
+        "RETURNING user_id",
+        [tracked_manga_id, user_id],
+    )
+    return len(rs.rows) > 0
+
+
+async def list_manga_subscribers(tracked_manga_id: int) -> list[str]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT user_id FROM manga_subscriptions WHERE tracked_manga_id = ?",
+        [tracked_manga_id],
+    )
+    return [row[0] for row in rs.rows]
+
+
+# ---------------------------------------------------------------------------
+# read_status
+# ---------------------------------------------------------------------------
+
+async def create_read_row(message_id: str, channel_id: str,
+                           tracked_manga_id: int, chapter_number: str) -> None:
+    c = _client_or_raise()
+    await c.execute(
+        "INSERT INTO read_status (message_id, channel_id, tracked_manga_id, chapter_number) "
+        "VALUES (?, ?, ?, ?)",
+        [message_id, channel_id, tracked_manga_id, chapter_number],
+    )
+
+
+async def toggle_read(message_id: str, user_id: str) -> list[str]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT readers FROM read_status WHERE message_id = ?", [message_id]
+    )
+    if not rs.rows:
+        return []
+    readers: list[str] = json.loads(rs.rows[0][0])
+    if user_id in readers:
+        readers.remove(user_id)
+    else:
+        readers.append(user_id)
+    await c.execute(
+        "UPDATE read_status SET readers = ? WHERE message_id = ?",
+        [json.dumps(readers), message_id],
+    )
+    return readers
+
+
+async def get_read_status(message_id: str) -> dict[str, Any] | None:
+    c = _client_or_raise()
+    rs = await c.execute("SELECT * FROM read_status WHERE message_id = ?", [message_id])
+    if not rs.rows:
+        return None
+    row = dict(zip(rs.columns, rs.rows[0]))
+    row["readers"] = json.loads(row["readers"])
+    return row
