@@ -43,11 +43,18 @@ async def send_new_chapter_notification(bot: commands.Bot, manga: dict, chapter_
 
 async def _send_ping_message(channel: discord.abc.Messageable, manga: dict) -> None:
     subscribers = await db.list_manga_subscribers(manga["id"])
-    if not subscribers:
+    role_id = await db.get_manga_role_ping(manga["id"])
+
+    mentions = []
+    if role_id:
+        mentions.append(f"<@&{role_id}>")
+    mentions.extend(f"<@{uid}>" for uid in subscribers)
+
+    if not mentions:
         return
 
-    mentions = [f"<@{uid}>" for uid in subscribers]
-    allowed = discord.AllowedMentions(users=True, roles=False, everyone=False)
+    allowed = discord.AllowedMentions(roles=True, users=True, everyone=False)
     for i in range(0, len(mentions), MENTIONS_PER_MESSAGE):
         chunk = mentions[i : i + MENTIONS_PER_MESSAGE]
         await channel.send(content=" ".join(chunk), allowed_mentions=allowed)
+    mentions = [f"<@{uid}>" for uid in subscribers]
