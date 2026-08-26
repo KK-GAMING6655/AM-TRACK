@@ -5,20 +5,64 @@ out of db/database.py — both use the same key names) and returns a
 discord.Embed. No Discord API calls happen in this module.
 """
 
+import re
+
 import discord
 
-from utils.time_format import format_countdown, format_release_week, format_full_datetime
+from utils.time_format import format_discord_timestamp, format_release_week
 
 BLUE = discord.Color.blue()
 SYNOPSIS_LIMIT = 600  # keep spoiler-wrapped synopsis from blowing past embed limits
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_MULTI_BLANK_LINE_RE = re.compile(r"\n{3,}")
+
+
+def _clean_text(text: str) -> str:
+    """Strips stray HTML fragments (<br>, <i>, </i>, etc.) that AniList's
+    asHtml:false and MangaDex's raw descriptions don't always fully clean,
+    and collapses the blank lines that removing <br><br> tends to leave
+    behind. Plain-text only — never removes real prose."""
+    text = _HTML_TAG_RE.sub("", text)
+    text = text.replace("&nbsp;", " ")
+    text = _MULTI_BLANK_LINE_RE.sub("\n\n", text)
+    return text.strip()
+
+
+def _truncate_at_sentence(text: str, limit: int) -> str:
+    """Cuts at the end of the last complete sentence within `limit`
+    characters, never mid-word/mid-sentence, and never appends "...".
+    If the description is short enough, returns it unchanged."""
+    if len(text) <= limit:
+        return text
+
+    window = text[:limit]
+    last_end = -1
+    for punct in (". ", "! ", "? ", ".\n", "!\n", "?\n"):
+        idx = window.rfind(punct)
+        if idx > last_end:
+            last_end = idx
+
+    if last_end != -1:
+        return text[: last_end + 1].strip()
+
+    # no sentence boundary found within the limit — fall back to the
+    # last full paragraph break instead of cutting mid-sentence
+    para_break = window.rfind("\n\n")
+    if para_break > 0:
+        return text[:para_break].strip()
+
+    # last resort: nothing to cleanly break on at all (rare — a single
+    # very long run-on description). Better to show the whole thing than
+    # cut it off mid-thought.
+    return text.strip()
 
 
 def _spoiler_synopsis(synopsis: str | None) -> str:
     if not synopsis:
         return "||No synopsis available.||"
-    text = synopsis.strip()
-    if len(text) > SYNOPSIS_LIMIT:
-        text = text[:SYNOPSIS_LIMIT].rsplit(" ", 1)[0] + "..."
+    text = _clean_text(synopsis)
+    text = _truncate_at_sentence(text, SYNOPSIS_LIMIT)
     # AniList descriptions can contain literal "||" from source formatting;
     # strip so we don't prematurely close the spoiler tag.
     text = text.replace("||", "")
@@ -88,9 +132,9 @@ def anime_details_embed(anime: dict) -> discord.Embed:
         embed.add_field(name="Release week", value=format_release_week(next_at), inline=True)
         embed.add_field(
             name="Next episode",
-            value=f"{format_full_datetime(next_at)} ({format_countdown(next_at)})",
+            value=format_discord_timestamp(next_at),
             inline=True,
-        )
+    )
     else:
         embed.add_field(name="Release week", value="N/A", inline=True)
         embed.add_field(name="Next episode", value="N/A", inline=True)
@@ -145,7 +189,7 @@ def new_episode_embed(anime: dict, episode: int, nickname: str,
     next_at = anime.get("next_airing_at")
     next_ep = anime.get("next_airing_episode")
     if next_at and next_ep:
-        next_line = f"Episode {next_ep} will air at {format_full_datetime(next_at)} ({format_countdown(next_at)})"
+        next_line = f"Episode {next_ep} will air at {format_discord_timestamp(next_at)}"
     else:
         next_line = "N/A"
     embed.add_field(name="Next episode", value=next_line, inline=False)
@@ -190,16 +234,14 @@ PINK = discord.Color.from_rgb(255, 105, 180)
 
 
 def _spoiler_description(description: str | None) -> str:
-    """Manga descriptions aren't wrapped in spoiler tags in the spec (only
-    the anime synopsis was) — this just truncates and is named separately
-    from _spoiler_synopsis for clarity at call sites."""
+    """Manga descriptions now get the same treatment as anime synopses:
+    HTML-tag cleanup, sentence-safe truncation, and spoiler-wrapping."""
     if not description:
-        return "No description available."
-    text = description.strip()
-    if len(text) > SYNOPSIS_LIMIT:
-        text = text[:SYNOPSIS_LIMIT].rsplit(" ", 1)[0] + "..."
-    return text
-
+        return "||No description available.||"
+    text = _clean_text(description)
+    text = _truncate_at_sentence(text, SYNOPSIS_LIMIT)
+    text = text.replace("||", "")
+    return f"||{text}||"
 
 def manga_add_confirmation_embed(manga: dict) -> discord.Embed:
     """Posted by /manga-add right after a title is tracked."""
@@ -281,3 +323,69 @@ def manga_error_embed(message: str) -> discord.Embed:
     the manga side (Part 1's errors stayed plain-text for consistency
     with what was already deployed; this only applies to Part 2)."""
     return discord.Embed(description=message, color=PINK)
+
+
+
+# ---------------------------------------------------------------------------
+# #13: /animelist and /mangalist
+# ---------------------------------------------------------------------------
+
+LIST_EMBED_CHAR_LIMIT = 3900  # stay safely under Discord's 4096 embed-description cap
+
+
+def build_anime_list_embeds(rows_with_counts: list[tuple[dict, int]]) -> list[discord.Embed]:
+    """rows_with_counts: [(tracked_anime_row, subscriber_count), ...].
+    Returns one or more embeds (split only if the list is long enough to
+    exceed Discord's description limit)."""
+    if not rows_with_counts:
+        embed = discord.Embed(description="No anime tracked in this server yet.", color=BLUE)
+        return [embed]
+
+    lines = []
+    for i, (anime, count) in enumerate(rows_with_counts, start=1):
+        title = anime.get("title_english") or anime.get("title_romaji") or anime["nickname"]
+        url = anime.get("site_url") or anime.get("anilist_url")
+        link_text = f"[{title}]({url})" if url else title
+        lines.append(f"{i}) {link_text} — {count} subscriber{'s' if count != 1 else ''}")
+
+    return _chunk_lines_into_embeds(lines, title="Tracked Anime", color=BLUE)
+
+
+def build_manga_list_embeds(rows_with_counts: list[tuple[dict, int]]) -> list[discord.Embed]:
+    """Same shape as build_anime_list_embeds, for manga."""
+    if not rows_with_counts:
+        embed = discord.Embed(description="No manga tracked in this server yet.", color=PINK)
+        return [embed]
+
+    lines = []
+    for i, (manga, count) in enumerate(rows_with_counts, start=1):
+        title = manga.get("title_english") or manga["nickname"]
+        url = manga.get("mangadex_url")
+        link_text = f"[{title}]({url})" if url else title
+        lines.append(f"{i}) {link_text} — {count} subscriber{'s' if count != 1 else ''}")
+
+    return _chunk_lines_into_embeds(lines, title="Tracked Manga", color=PINK)
+
+
+def _chunk_lines_into_embeds(lines: list[str], title: str, color: discord.Color) -> list[discord.Embed]:
+    embeds = []
+    current_lines: list[str] = []
+    current_len = 0
+
+    for line in lines:
+        # +1 for the newline that will join it
+        if current_len + len(line) + 1 > LIST_EMBED_CHAR_LIMIT and current_lines:
+            embeds.append(discord.Embed(title=title, description="\n".join(current_lines), color=color))
+            current_lines = []
+            current_len = 0
+        current_lines.append(line)
+        current_len += len(line) + 1
+
+    if current_lines:
+        embeds.append(discord.Embed(title=title, description="\n".join(current_lines), color=color))
+
+    # only the first embed needs the title (avoids repeating it on every page)
+    for embed in embeds[1:]:
+        embed.title = None
+
+    return embeds
