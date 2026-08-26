@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from db import database as db
-from utils.autocomplete import tracked_anime_autocomplete
+from utils.autocomplete import assign_ping_role_target_autocomplete
 from utils.permissions import is_bot_admin
 
 
@@ -62,13 +62,21 @@ class AdminCog(commands.Cog):
 
     # -- /assign ping role ------------------------------------------------
 
-    @app_commands.command(name="assign-ping-role", description="Set or remove the role pinged for an anime's new episodes.")
-    @app_commands.describe(enable="Add or remove this role from the anime's ping list", anime="The tracked anime's nickname", role="The role to ping")
-    @app_commands.autocomplete(anime=tracked_anime_autocomplete)
+    # -- /assign ping role — #11: now covers anime AND manga via Type --------
+
+    @app_commands.command(name="assign-ping-role", description="Set or remove the role pinged for an anime's or manga's new releases.")
+    @app_commands.describe(
+        enable="Add or remove this role from the ping list",
+        type="Whether this targets an anime or a manga",
+        target="The tracked anime or manga's nickname",
+        role="The role to ping",
+    )
+    @app_commands.autocomplete(target=assign_ping_role_target_autocomplete)
     @is_bot_admin()
     async def assign_ping_role(
         self, interaction: discord.Interaction,
-        enable: Literal["Add", "Remove"], anime: str, role: discord.Role,
+        enable: Literal["Add", "Remove"], type: Literal["Anime", "Manga"],
+        target: str, role: discord.Role,
     ):
         if role.is_default():  # @everyone
             await interaction.response.send_message(
@@ -76,28 +84,52 @@ class AdminCog(commands.Cog):
             )
             return
 
-        tracked = await db.get_tracked_anime_by_nickname(str(interaction.guild_id), anime)
+        if type == "Manga":
+            tracked = await db.get_tracked_manga_by_nickname(str(interaction.guild_id), target)
+            if tracked is None:
+                await interaction.response.send_message(
+                    f"⚠️ No manga tracked here under the nickname **{target}**.", ephemeral=True
+                )
+                return
+            if enable == "Add":
+                await db.set_manga_role_ping(tracked["id"], str(role.id), str(interaction.user.id))
+                await interaction.response.send_message(
+                    f"✅ {role.mention} will now be pinged for **{target}**.", ephemeral=True
+                )
+            else:
+                removed = await db.remove_manga_role_ping(tracked["id"], str(role.id))
+                if removed:
+                    await interaction.response.send_message(
+                        f"✅ {role.mention} removed from **{target}**'s ping list.", ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"⚠️ {role.mention} wasn't set as the ping role for **{target}**.", ephemeral=True
+                    )
+            return
+
+        tracked = await db.get_tracked_anime_by_nickname(str(interaction.guild_id), target)
         if tracked is None:
             await interaction.response.send_message(
-                f"⚠️ No anime tracked here under the nickname **{anime}**.", ephemeral=True
+                f"⚠️ No anime tracked here under the nickname **{target}**.", ephemeral=True
             )
             return
 
         if enable == "Add":
             await db.set_role_ping(tracked["id"], str(role.id), str(interaction.user.id))
             await interaction.response.send_message(
-                f"✅ {role.mention} will now be pinged for **{anime}**.", ephemeral=True
+                f"✅ {role.mention} will now be pinged for **{target}**.", ephemeral=True
             )
         else:
             removed = await db.remove_role_ping(tracked["id"], str(role.id))
             if removed:
                 await interaction.response.send_message(
-                    f"✅ {role.mention} removed from **{anime}**'s ping list.", ephemeral=True
+                    f"✅ {role.mention} removed from **{target}**'s ping list.", ephemeral=True
                 )
             else:
                 await interaction.response.send_message(
-                    f"⚠️ {role.mention} wasn't set as the ping role for **{anime}**.", ephemeral=True
-                )
+                    f"⚠️ {role.mention} wasn't set as the ping role for **{target}**.", ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):
