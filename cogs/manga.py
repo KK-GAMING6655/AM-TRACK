@@ -20,7 +20,9 @@ from services import mangadex
 from utils.autocomplete import (
     mangadex_search_autocomplete,
     manga_details_search_autocomplete,
+    subscribed_manga_autocomplete,
     tracked_manga_autocomplete,
+    unsubscribed_manga_autocomplete,
 )
 from utils.embeds import manga_add_confirmation_embed, manga_details_embed, manga_error_embed
 from utils.permissions import is_bot_admin
@@ -96,7 +98,7 @@ class MangaCog(commands.Cog):
 
     @app_commands.command(name="subscribe-manga", description="Get pinged when a tracked manga's new chapter releases.")
     @app_commands.describe(manga="The tracked manga's nickname")
-    @app_commands.autocomplete(manga=tracked_manga_autocomplete)
+    @app_commands.autocomplete(manga=unsubscribed_manga_autocomplete)
     async def subscribe_manga(self, interaction: discord.Interaction, manga: str):
         tracked = await db.get_tracked_manga_by_nickname(str(interaction.guild_id), manga)
         if tracked is None:
@@ -117,7 +119,7 @@ class MangaCog(commands.Cog):
 
     @app_commands.command(name="unsubscribe-manga", description="Stop getting pinged for a tracked manga's new chapters.")
     @app_commands.describe(manga="A manga you're subscribed to")
-    @app_commands.autocomplete(manga=tracked_manga_autocomplete)
+    @app_commands.autocomplete(manga=subscribed_manga_autocomplete)
     async def unsubscribe_manga(self, interaction: discord.Interaction, manga: str):
         tracked = await db.get_tracked_manga_by_nickname(str(interaction.guild_id), manga)
         if tracked is None:
