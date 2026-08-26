@@ -396,13 +396,12 @@ async def update_anime_cache(tracked_anime_id: int, anime_data: dict[str, Any]) 
     )
 
 
-async def set_last_aired_episode(tracked_anime_id: int, episode: int) -> None:
+async def set_last_aired_episode(tracked_anime_id: int, episode: int, aired_at: int | None = None) -> None:
     c = _client_or_raise()
     await c.execute(
-        "UPDATE tracked_anime SET last_aired_episode = ? WHERE id = ?",
-        [episode, tracked_anime_id],
+        "UPDATE tracked_anime SET last_aired_episode = ?, last_episode_aired_at = ? WHERE id = ?",
+        [episode, aired_at, tracked_anime_id],
     )
-
 
 # ---------------------------------------------------------------------------
 # subscriptions
@@ -802,3 +801,135 @@ async def get_read_status(message_id: str) -> dict[str, Any] | None:
     row = dict(zip(rs.columns, rs.rows[0]))
     row["readers"] = json.loads(row["readers"])
     return row
+
+
+
+
+# ---------------------------------------------------------------------------
+# Subscribe/unsubscribe filtering — #7: exclude already-subscribed anime
+# from /subscribe-anime's options, and exclude not-yet-subscribed anime
+# from /unsubscribe-anime's options (and the manga equivalents).
+# ---------------------------------------------------------------------------
+
+async def list_unsubscribed_anime(guild_id: str, user_id: str) -> list[dict[str, Any]]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        """
+        SELECT * FROM tracked_anime
+        WHERE guild_id = ? AND id NOT IN (
+            SELECT tracked_anime_id FROM subscriptions WHERE user_id = ?
+        )
+        ORDER BY nickname
+        """,
+        [guild_id, user_id],
+    )
+    out = []
+    for row in rs.rows:
+        d = dict(zip(rs.columns, row))
+        d["genres"] = json.loads(d["genres"]) if d.get("genres") else []
+        out.append(d)
+    return out
+
+
+async def list_subscribed_anime(guild_id: str, user_id: str) -> list[dict[str, Any]]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        """
+        SELECT ta.* FROM tracked_anime ta
+        JOIN subscriptions s ON ta.id = s.tracked_anime_id
+        WHERE ta.guild_id = ? AND s.user_id = ?
+        ORDER BY ta.nickname
+        """,
+        [guild_id, user_id],
+    )
+    out = []
+    for row in rs.rows:
+        d = dict(zip(rs.columns, row))
+        d["genres"] = json.loads(d["genres"]) if d.get("genres") else []
+        out.append(d)
+    return out
+
+
+async def list_unsubscribed_manga(guild_id: str, user_id: str) -> list[dict[str, Any]]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        """
+        SELECT * FROM tracked_manga
+        WHERE guild_id = ? AND id NOT IN (
+            SELECT tracked_manga_id FROM manga_subscriptions WHERE user_id = ?
+        )
+        ORDER BY nickname
+        """,
+        [guild_id, user_id],
+    )
+    return [_row_to_manga_dict(rs.columns, row) for row in rs.rows]
+
+
+async def list_subscribed_manga(guild_id: str, user_id: str) -> list[dict[str, Any]]:
+    c = _client_or_raise()
+    rs = await c.execute(
+        """
+        SELECT tm.* FROM tracked_manga tm
+        JOIN manga_subscriptions s ON tm.id = s.tracked_manga_id
+        WHERE tm.guild_id = ? AND s.user_id = ?
+        ORDER BY tm.nickname
+        """,
+        [guild_id, user_id],
+    )
+    return [_row_to_manga_dict(rs.columns, row) for row in rs.rows]
+
+
+# ---------------------------------------------------------------------------
+# manga_role_pings — #11: /assign-ping-role now supports manga too
+# ---------------------------------------------------------------------------
+
+async def set_manga_role_ping(tracked_manga_id: int, role_id: str, assigned_by: str) -> None:
+    c = _client_or_raise()
+    await c.execute(
+        """
+        INSERT INTO manga_role_pings (tracked_manga_id, role_id, assigned_by)
+        VALUES (?, ?, ?)
+        ON CONFLICT(tracked_manga_id) DO UPDATE SET
+            role_id = excluded.role_id, assigned_by = excluded.assigned_by
+        """,
+        [tracked_manga_id, role_id, assigned_by],
+    )
+
+
+async def remove_manga_role_ping(tracked_manga_id: int, role_id: str) -> bool:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "DELETE FROM manga_role_pings WHERE tracked_manga_id = ? AND role_id = ? "
+        "RETURNING role_id",
+        [tracked_manga_id, role_id],
+    )
+    return len(rs.rows) > 0
+
+
+async def get_manga_role_ping(tracked_manga_id: int) -> str | None:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT role_id FROM manga_role_pings WHERE tracked_manga_id = ?",
+        [tracked_manga_id],
+    )
+    return rs.rows[0][0] if rs.rows else None
+
+
+# ---------------------------------------------------------------------------
+# #13: subscriber counts for /animelist and /mangalist
+# ---------------------------------------------------------------------------
+
+async def count_subscribers(tracked_anime_id: int) -> int:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT COUNT(*) FROM subscriptions WHERE tracked_anime_id = ?", [tracked_anime_id]
+    )
+    return rs.rows[0][0]
+
+
+async def count_manga_subscribers(tracked_manga_id: int) -> int:
+    c = _client_or_raise()
+    rs = await c.execute(
+        "SELECT COUNT(*) FROM manga_subscriptions WHERE tracked_manga_id = ?", [tracked_manga_id]
+    )
+    return rs.rows[0][0]
