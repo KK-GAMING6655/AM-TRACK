@@ -8,6 +8,10 @@ command, not both. Since the spec needs bare "/anime" for details
 alongside "/anime add"/"/anime remove", these are implemented as flat
 hyphenated commands instead of a nested group. Functionally identical,
 just a different name in the Discord command picker.
+
+/anime (details) fetches live from AniList rather than the server's
+tracked list — #10: covers every anime (aired, airing, or upcoming),
+same pattern /manga already used.
 """
 
 import discord
@@ -17,9 +21,11 @@ from discord.ext import commands
 from db import database as db
 from services import anilist
 from utils.autocomplete import (
+    anilist_all_search_autocomplete,
     anilist_search_autocomplete,
-    anime_details_autocomplete,
+    subscribed_anime_autocomplete,
     tracked_anime_autocomplete,
+    unsubscribed_anime_autocomplete,
 )
 from utils.embeds import anime_add_confirmation_embed, anime_details_embed
 from utils.permissions import is_bot_admin
@@ -90,7 +96,7 @@ class AnimeCog(commands.Cog):
 
     @app_commands.command(name="subscribe-anime", description="Get pinged when a tracked anime's new episode airs.")
     @app_commands.describe(anime="The tracked anime's nickname")
-    @app_commands.autocomplete(anime=tracked_anime_autocomplete)
+    @app_commands.autocomplete(anime=unsubscribed_anime_autocomplete)
     async def subscribe_anime(self, interaction: discord.Interaction, anime: str):
         tracked = await db.get_tracked_anime_by_nickname(str(interaction.guild_id), anime)
         if tracked is None:
@@ -109,8 +115,8 @@ class AnimeCog(commands.Cog):
         await interaction.response.send_message(msg, ephemeral=True)
 
     @app_commands.command(name="unsubscribe-anime", description="Stop getting pinged for a tracked anime's new episodes.")
-    @app_commands.describe(anime="The tracked anime's nickname")
-    @app_commands.autocomplete(anime=tracked_anime_autocomplete)
+    @app_commands.describe(anime="An anime you're subscribed to")
+    @app_commands.autocomplete(anime=subscribed_anime_autocomplete)
     async def unsubscribe_anime(self, interaction: discord.Interaction, anime: str):
         tracked = await db.get_tracked_anime_by_nickname(str(interaction.guild_id), anime)
         if tracked is None:
@@ -123,19 +129,28 @@ class AnimeCog(commands.Cog):
         msg = f"✅ Unsubscribed from **{anime}**." if removed else f"You weren't subscribed to **{anime}**."
         await interaction.response.send_message(msg, ephemeral=True)
 
-    # -- /anime (details) ----------------------------------------------------
+    # -- /anime (details) — searches ALL of AniList, not just tracked -------
 
-    @app_commands.command(name="anime", description="Show details for a tracked anime.")
-    @app_commands.describe(anime="The tracked anime")
-    @app_commands.autocomplete(anime=anime_details_autocomplete)
+    @app_commands.command(name="anime", description="Show details for any anime.")
+    @app_commands.describe(anime="Search AniList for any anime")
+    @app_commands.autocomplete(anime=anilist_all_search_autocomplete)
     async def anime_details(self, interaction: discord.Interaction, anime: str):
-        tracked = await db.get_tracked_anime_by_nickname(str(interaction.guild_id), anime)
-        if tracked is None:
-            await interaction.response.send_message(
-                f"⚠️ No anime tracked here under the nickname **{anime}**.", ephemeral=True
+        await interaction.response.defer()
+        try:
+            anilist_id = int(anime)
+        except ValueError:
+            await interaction.followup.send(
+                "⚠️ Please pick an anime from the search suggestions.", ephemeral=True
             )
             return
-        await interaction.response.send_message(embed=anime_details_embed(tracked))
+
+        media = await anilist.get_anime_by_id(anilist_id)
+        if media is None:
+            await interaction.followup.send("⚠️ Couldn't find that anime on AniList.", ephemeral=True)
+            return
+
+        fields = anilist.to_db_fields(media)
+        await interaction.followup.send(embed=anime_details_embed(fields))
 
 
 async def setup(bot: commands.Bot):
