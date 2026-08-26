@@ -3,38 +3,19 @@
 from datetime import datetime, timezone
 
 
-def format_countdown(target_ts: int, now: datetime | None = None) -> str:
-    """'in 3 days', 'in 4 hours', 'in 12 minutes', etc. — coarsest
-    non-zero unit only, matching the spec's examples."""
-    now = now or datetime.now(timezone.utc)
-    target = datetime.fromtimestamp(target_ts, tz=timezone.utc)
-    delta = target - now
-    seconds = int(delta.total_seconds())
-    if seconds <= 0:
-        return "now"
-
-    years, rem = divmod(seconds, 31536000)
-    months, rem = divmod(rem, 2592000)
-    days, rem = divmod(rem, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, seconds = divmod(rem, 60)
-
-    for value, unit in (
-        (years, "year"), (months, "month"), (days, "day"),
-        (hours, "hour"), (minutes, "minute"), (seconds, "second"),
-    ):
-        if value > 0:
-            return f"in {value} {unit}{'s' if value != 1 else ''}"
-    return "now"
-
-
 def format_release_week(target_ts: int) -> str:
     """Day-of-week name from a unix timestamp, e.g. 'Monday'."""
     dt = datetime.fromtimestamp(target_ts, tz=timezone.utc)
     return dt.strftime("%A")
 
 
-def format_full_datetime(target_ts: int) -> str:
-    """'25 December 2026, 14:00 UTC' — used in the 'will air at' line."""
-    dt = datetime.fromtimestamp(target_ts, tz=timezone.utc)
-    return dt.strftime("%d %B %Y, %H:%M UTC")
+def format_discord_timestamp(target_ts: int) -> str:
+    """#12: Discord's native dynamic timestamp markup, e.g.
+    '<t:1788102000:f> (<t:1788102000:R>)' — renders in each viewer's own
+    timezone and keeps counting down live, unlike a fixed UTC string.
+
+    Note: Discord's actual valid style letters are t/T/d/D/f/F/R only —
+    there's no ':s' style, so this uses 'f' (short date/time) for the
+    absolute time plus 'R' (relative, e.g. "in 5 days") to match what
+    was asked for."""
+    return f"<t:{target_ts}:f> (<t:{target_ts}:R>)"
