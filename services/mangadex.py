@@ -102,9 +102,18 @@ async def get_english_chapter_count(manga_id: str) -> int:
     data = await _get(
         f"/manga/{manga_id}/aggregate", params={"translatedLanguage[]": "en"}
     )
+    volumes = data.get("volumes") or {}
+    # MangaDex returns "volumes": [] (an empty list, not {}) when a title
+    # has zero chapters in the requested language — .values() would crash
+    # on that, so normalize first.
+    if isinstance(volumes, list):
+        return 0
     total = 0
-    for volume in data.get("volumes", {}).values():
-        total += len(volume.get("chapters", {}))
+    for volume in volumes.values():
+        chapters = volume.get("chapters") or {}
+        if isinstance(chapters, list):
+            continue
+        total += len(chapters)
     return total
 
 
@@ -158,6 +167,17 @@ async def get_full_manga_details(manga_id: str) -> dict[str, Any] | None:
     fields["rating"] = rating
     fields["total_chapters_en"] = total_chapters
     return fields
+
+
+async def get_english_chapter_count_safe(manga_id: str, timeout: float = 1.5) -> int | None:
+    """Same as get_english_chapter_count but bounded — used in autocomplete
+    callbacks, which Discord gives roughly 3 seconds total to respond to.
+    Returns None (rather than raising/hanging) on timeout or any error, so
+    one slow title can't blank out the whole suggestion list."""
+    try:
+        return await asyncio.wait_for(get_english_chapter_count(manga_id), timeout=timeout)
+    except Exception:
+        return None
 
 
 def to_db_fields(manga: dict[str, Any]) -> dict[str, Any]:
