@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS tracked_anime (
     anilist_url     TEXT,
     mal_url         TEXT,
     last_aired_episode INTEGER NOT NULL DEFAULT 0,
+    last_episode_aired_at INTEGER,  -- unix ts, approximate — set when the poller detects an increment
     next_airing_at  INTEGER,        -- unix timestamp of next episode, null if none scheduled
     next_airing_episode INTEGER,
     UNIQUE (guild_id, nickname)
@@ -147,4 +148,15 @@ CREATE TABLE IF NOT EXISTS read_status (
     chapter_number   TEXT NOT NULL,
     readers          TEXT NOT NULL DEFAULT '[]', -- JSON array of user_ids
     PRIMARY KEY (message_id)
+);
+
+
+-- Role to ping for a tracked manga (max 1 enforced in application code,
+-- mirrors role_pings for anime — added for /assign-ping-role's Type param)
+CREATE TABLE IF NOT EXISTS manga_role_pings (
+    tracked_manga_id INTEGER NOT NULL REFERENCES tracked_manga(id) ON DELETE CASCADE,
+    role_id          TEXT NOT NULL,
+    assigned_by      TEXT NOT NULL,
+    assigned_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tracked_manga_id)
 );
