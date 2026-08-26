@@ -32,6 +32,9 @@ MEDIA_FIELDS = """
     seasonYear
     episodes
     nextAiringEpisode { episode airingAt }
+    airingSchedule(notYetAired: false, page: 1, perPage: 1, sort: EPISODE_DESC) {
+        nodes { episode airingAt }
+    }
     siteUrl
 """
 
@@ -71,6 +74,32 @@ async def search_anime(search_text: str, limit: int = 25) -> list[dict[str, Any]
     return data["Page"]["media"]
 
 
+
+async def search_anime_all_statuses(search_text: str, limit: int = 25) -> list[dict[str, Any]]:
+    """Used by /anime (details) — #10: unlike search_anime() above, this
+    includes already-finished/cancelled shows too, since the details
+    command should cover every anime, not just what's currently
+    airing/upcoming."""
+    query = """
+    query ($search: String, $perPage: Int) {
+        Page(page: 1, perPage: $perPage) {
+            media(
+                search: $search
+                type: ANIME
+                sort: POPULARITY_DESC
+            ) {
+                id
+                title { romaji english }
+                status
+            }
+        }
+    }
+    """
+    data = await _post(query, {"search": search_text, "perPage": limit})
+    return data["Page"]["media"]
+    
+
+
 async def get_anime_by_id(anilist_id: int) -> dict[str, Any] | None:
     query = f"""
     query ($id: Int) {{
@@ -108,16 +137,29 @@ async def get_many_anime_by_ids(anilist_ids: list[int]) -> list[dict[str, Any]]:
 
 def compute_last_aired_episode(media: dict[str, Any]) -> int:
     """Best-effort 'how many episodes have aired so far' from AniList data.
-    AniList doesn't expose this directly — it only gives the *next*
-    airing episode, so we derive it: next.episode - 1, or the full
-    episode count once the show is FINISHED, or 0 if nothing has aired."""
+
+    Takes the max of every signal AniList gives us, rather than trusting
+    nextAiringEpisode alone — that field goes null whenever AniList's
+    airing-schedule data is incomplete or lagging for a title, which
+    previously made this silently return 0 forever for affected shows
+    (the notification would never fire because "0 aired" never looked
+    like progress). airingSchedule(notYetAired: false, ...) is a second,
+    independent signal that catches those cases.
+    """
+    candidates = [0]
+
     next_airing = media.get("nextAiringEpisode")
     if next_airing:
-        return max(next_airing["episode"] - 1, 0)
-    if media.get("status") == "FINISHED" and media.get("episodes"):
-        return media["episodes"]
-    return 0
+        candidates.append(max(next_airing["episode"] - 1, 0))
 
+    schedule_nodes = (media.get("airingSchedule") or {}).get("nodes") or []
+    if schedule_nodes:
+        candidates.append(schedule_nodes[0]["episode"])
+
+    if media.get("status") == "FINISHED" and media.get("episodes"):
+        candidates.append(media["episodes"])
+
+    return max(candidates)
 
 def to_db_fields(media: dict[str, Any]) -> dict[str, Any]:
     """Maps a raw AniList Media object to the flat dict database.py expects."""
