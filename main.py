@@ -37,7 +37,7 @@ log = logging.getLogger("amtrack")
 INTENTS = discord.Intents.default()
 INTENTS.members = True  # needed to resolve users for /admin-add's Member picker and mentions
 
-COGS = ["cogs.admin", "cogs.anime", "cogs.manga"]
+COGS = ["cogs.admin", "cogs.anime", "cogs.manga", "cogs.lists"]
 
 
 class AMTrackBot(commands.Bot):
