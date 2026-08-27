@@ -32,7 +32,7 @@ MEDIA_FIELDS = """
     seasonYear
     episodes
     nextAiringEpisode { episode airingAt }
-    airingSchedule(notYetAired: false, page: 1, perPage: 1, sort: EPISODE_DESC) {
+    airingSchedule(notYetAired: false, page: 1, perPage: 5) {
         nodes { episode airingAt }
     }
     siteUrl
@@ -154,8 +154,7 @@ def compute_last_aired_episode(media: dict[str, Any]) -> int:
 
     schedule_nodes = (media.get("airingSchedule") or {}).get("nodes") or []
     if schedule_nodes:
-        candidates.append(schedule_nodes[0]["episode"])
-
+        candidates.append(max(n["episode"] for n in schedule_nodes))
     if media.get("status") == "FINISHED" and media.get("episodes"):
         candidates.append(media["episodes"])
 
